@@ -44,7 +44,9 @@ KID = "connect4.healow.com"
 # ─────────────────────────────────────────────
 # SCOPES
 # ─────────────────────────────────────────────
-READ_SCOPE = (
+
+# Single Patient - Read Only
+SINGLE_READ_SCOPE = (
     "system/AllergyIntolerance.read system/Basic.read system/Binary.read "
     "system/CarePlan.read system/CareTeam.read system/Condition.read "
     "system/Coverage.read system/Device.read system/DiagnosticReport.read "
@@ -58,7 +60,8 @@ READ_SCOPE = (
     "system/ServiceRequest.read system/Specimen.read"
 )
 
-CREATE_SCOPE = (
+# Single Patient - Create Only
+SINGLE_CREATE_SCOPE = (
     "system/AllergyIntolerance.create system/Communication.create "
     "system/Condition.create system/Coverage.create system/DocumentReference.create "
     "system/Encounter.create system/Immunization.create system/MedicationRequest.create "
@@ -66,8 +69,23 @@ CREATE_SCOPE = (
     "system/QuestionnaireResponse.create system/ServiceRequest.create system/Task.create"
 )
 
-READ_CREATE_SCOPE = READ_SCOPE + " " + CREATE_SCOPE
-BULK_READ_SCOPE = READ_SCOPE + " system/Group.read"
+# Single Prod = Read + Create
+SINGLE_PROD_SCOPE = SINGLE_READ_SCOPE + " " + SINGLE_CREATE_SCOPE
+
+# Bulk - Read Only (different resource list)
+BULK_READ_SCOPE = (
+    "system/AllergyIntolerance.read system/Binary.read "
+    "system/CarePlan.read system/CareTeam.read system/Condition.read "
+    "system/Coverage.read system/Device.read system/DiagnosticReport.read "
+    "system/DocumentReference.read system/Encounter.read "
+    "system/Goal.read system/Group.read system/Immunization.read system/Location.read "
+    "system/Media.read system/Medication.read system/MedicationAdministration.read "
+    "system/MedicationDispense.read system/MedicationRequest.read system/Observation.read "
+    "system/Organization.read system/Patient.read system/Practitioner.read "
+    "system/PractitionerRole.read system/Procedure.read system/Provenance.read "
+    "system/QuestionnaireResponse.read system/RelatedPerson.read "
+    "system/ServiceRequest.read system/Specimen.read"
+)
 
 # ─────────────────────────────────────────────
 # ENVIRONMENT CONFIG
@@ -76,12 +94,12 @@ ENVIRONMENTS = {
     "singleprod": {
         "client_id": "38W1oSu4X_LKOpJEAB-55HwLX9AOdWbNSBkBb1ipdic",
         "token_url": "https://oauthserver.eclinicalworks.com/oauth/oauth2/token",
-        "scope":     READ_CREATE_SCOPE,
+        "scope":     SINGLE_PROD_SCOPE,
     },
     "singlesandbox": {
         "client_id": "UIcl857ln1yvzPkygxi9x5QMPEOoEnnJy72-gx2FUSw",
         "token_url": "https://staging-oauthserver.ecwcloud.com/oauth/oauth2/token",
-        "scope":     READ_SCOPE,
+        "scope":     SINGLE_READ_SCOPE,
     },
     "bulkprod": {
         "client_id": "tZ_KYyTqt8ryjWjhZpwEDPkDbxAGhh1KqKyr8c8zQas",
@@ -173,7 +191,11 @@ def token_only():
         return jsonify({"error": f"Invalid mode. Choose from: {list(ENVIRONMENTS.keys())}"}), 400
     try:
         access_token = get_access_token(mode)
-        return jsonify({"mode": mode, "access_token": access_token})
+        return jsonify({
+            "mode":         mode,
+            "access_token": access_token,
+            "scope":        ENVIRONMENTS[mode]["scope"],
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -205,6 +227,7 @@ def call_with_token():
         content_type = resp.headers.get("Content-Type", "")
         return jsonify({
             "mode":        mode,
+            "scope":       ENVIRONMENTS[mode]["scope"],
             "status_code": resp.status_code,
             "response":    resp.json() if "json" in content_type else resp.text,
         })
