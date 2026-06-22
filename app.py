@@ -1,14 +1,14 @@
-import os
 import uuid
 import time
+import os
 import requests
-import jwt  # PyJWT
+import jwt
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 # ─────────────────────────────────────────────
-# CONFIG — replace values if they change
+# PRIVATE KEY (same for all environments)
 # ─────────────────────────────────────────────
 PRIVATE_KEY = """-----BEGIN PRIVATE KEY-----
 MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDc6WzU7xncyMTr
@@ -39,10 +39,12 @@ Vs0zUimHcwlK6dP1uCywbSXzzK0nTlQHyfDzkbXgx0nuMLHhPzVUzux72bSobpzq
 W8YujzKvlP/kQs3cH5mb0sPIKw==
 -----END PRIVATE KEY-----"""
 
-TOKEN_URL    = "https://oauthserver.eclinicalworks.com/oauth/oauth2/token"
-CLIENT_ID    = "38W1oSu4X_LKOpJEAB-55HwLX9AOdWbNSBkBb1ipdic"  # iss/sub from your JWT
-KID          = "connect4.healow.com"
-SCOPE = (
+KID = "connect4.healow.com"
+
+# ─────────────────────────────────────────────
+# SCOPES
+# ─────────────────────────────────────────────
+READ_SCOPE = (
     "system/AllergyIntolerance.read system/Basic.read system/Binary.read "
     "system/CarePlan.read system/CareTeam.read system/Condition.read "
     "system/Coverage.read system/Device.read system/DiagnosticReport.read "
@@ -53,7 +55,10 @@ SCOPE = (
     "system/Organization.read system/Patient.read system/Practitioner.read "
     "system/PractitionerRole.read system/Procedure.read system/Provenance.read "
     "system/Questionnaire.read system/QuestionnaireResponse.read system/RelatedPerson.read "
-    "system/ServiceRequest.read system/Specimen.read "
+    "system/ServiceRequest.read system/Specimen.read"
+)
+
+CREATE_SCOPE = (
     "system/AllergyIntolerance.create system/Communication.create "
     "system/Condition.create system/Coverage.create system/DocumentReference.create "
     "system/Encounter.create system/Immunization.create system/MedicationRequest.create "
@@ -61,62 +66,131 @@ SCOPE = (
     "system/QuestionnaireResponse.create system/ServiceRequest.create system/Task.create"
 )
 
+READ_CREATE_SCOPE = READ_SCOPE + " " + CREATE_SCOPE
 
 # ─────────────────────────────────────────────
-# STEP 1: Generate client_assertion JWT
+# ENVIRONMENT CONFIG
 # ─────────────────────────────────────────────
-def generate_client_assertion():
+ENVIRONMENTS = {
+    "singleprod": {
+        "client_id": "38W1oSu4X_LKOpJEAB-55HwLX9AOdWbNSBkBb1ipdic",
+        "token_url": "https://oauthserver.eclinicalworks.com/oauth/oauth2/token",
+        "scope":     READ_CREATE_SCOPE,
+    },
+    "singlesandbox": {
+        "client_id": "UIcl857ln1yvzPkygxi9x5QMPEOoEnnJy72-gx2FUSw",
+        "token_url": "https://staging-oauthserver.ecwcloud.com/oauth/oauth2/token",
+        "scope":     READ_SCOPE,
+    },
+    "bulkprod": {
+        "client_id": "tZ_KYyTqt8ryjWjhZpwEDPkDbxAGhh1KqKyr8c8zQas",
+        "token_url": "https://oauthserver.eclinicalworks.com/oauth/oauth2/token",
+        "scope":     READ_SCOPE,
+    },
+    "bulksandbox": {
+        "client_id": "0jBDg0uX3WEhhMzFmwqL1PH8LJP5Kx58neJTOWLhHGA",
+        "token_url": "https://staging-oauthserver.ecwcloud.com/oauth/oauth2/token",
+        "scope":     READ_SCOPE,
+    },
+}
+
+# ─────────────────────────────────────────────
+# TOKEN CACHE (in-memory, per environment)
+# ─────────────────────────────────────────────
+token_cache = {}
+
+def get_cached_token(mode):
+    cached = token_cache.get(mode)
+    if cached and time.time() < cached["expires_at"] - 30:
+        return cached["token"]
+    return None
+
+def set_cached_token(mode, token, expires_in=300):
+    token_cache[mode] = {
+        "token":      token,
+        "expires_at": time.time() + expires_in,
+    }
+
+# ─────────────────────────────────────────────
+# GENERATE JWT client_assertion
+# ─────────────────────────────────────────────
+def generate_client_assertion(client_id, token_url):
     now = int(time.time())
     payload = {
-        "exp": now + 300,           # 5 min expiry
-        "jti": str(uuid.uuid4()),   # unique ID every time
-        "iss": CLIENT_ID,
-        "sub": CLIENT_ID,
-        "aud": TOKEN_URL,
+        "exp": now + 300,
+        "jti": str(uuid.uuid4()),
+        "iss": client_id,
+        "sub": client_id,
+        "aud": token_url,
     }
     headers = {
         "alg": "RS384",
         "typ": "JWT",
         "kid": KID,
     }
-    token = jwt.encode(
-        payload,
-        PRIVATE_KEY,
-        algorithm="RS384",
-        headers=headers,
-    )
-    return token
-
+    return jwt.encode(payload, PRIVATE_KEY, algorithm="RS384", headers=headers)
 
 # ─────────────────────────────────────────────
-# STEP 2: Get Access Token from eCW
+# FETCH ACCESS TOKEN
 # ─────────────────────────────────────────────
-def get_access_token():
-    client_assertion = generate_client_assertion()
+def get_access_token(mode):
+    cached = get_cached_token(mode)
+    if cached:
+        return cached
+
+    env       = ENVIRONMENTS[mode]
+    client_id = env["client_id"]
+    token_url = env["token_url"]
+    scope     = env["scope"]
+
+    client_assertion = generate_client_assertion(client_id, token_url)
 
     data = {
         "grant_type":            "client_credentials",
         "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
         "client_assertion":      client_assertion,
-        "scope":                 SCOPE,
+        "scope":                 scope,
     }
 
-    resp = requests.post(TOKEN_URL, data=data)
+    resp = requests.post(token_url, data=data, timeout=10)
     resp.raise_for_status()
-    return resp.json()["access_token"]
+    result = resp.json()
 
+    access_token = result["access_token"]
+    expires_in   = result.get("expires_in", 300)
+
+    set_cached_token(mode, access_token, expires_in)
+    return access_token
 
 # ─────────────────────────────────────────────
-# FLASK ENDPOINT: GET /call?url=<target_url>
+# ENDPOINT: GET /token?mode=singleprod
+# ─────────────────────────────────────────────
+@app.route("/token", methods=["GET"])
+def token_only():
+    mode = request.args.get("mode", "singleprod").lower()
+    if mode not in ENVIRONMENTS:
+        return jsonify({"error": f"Invalid mode. Choose from: {list(ENVIRONMENTS.keys())}"}), 400
+    try:
+        access_token = get_access_token(mode)
+        return jsonify({"mode": mode, "access_token": access_token})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ─────────────────────────────────────────────
+# ENDPOINT: GET /call?mode=singleprod&url=...
 # ─────────────────────────────────────────────
 @app.route("/call", methods=["GET"])
 def call_with_token():
+    mode       = request.args.get("mode", "singleprod").lower()
     target_url = request.args.get("url")
+
+    if mode not in ENVIRONMENTS:
+        return jsonify({"error": f"Invalid mode. Choose from: {list(ENVIRONMENTS.keys())}"}), 400
     if not target_url:
         return jsonify({"error": "Missing 'url' query param"}), 400
 
     try:
-        access_token = get_access_token()
+        access_token = get_access_token(mode)
     except Exception as e:
         return jsonify({"error": f"Token generation failed: {str(e)}"}), 500
 
@@ -126,26 +200,15 @@ def call_with_token():
     }
 
     try:
-        resp = requests.get(target_url, headers=headers)
+        resp = requests.get(target_url, headers=headers, timeout=15)
+        content_type = resp.headers.get("Content-Type", "")
         return jsonify({
+            "mode":        mode,
             "status_code": resp.status_code,
-            "response":    resp.json() if "json" in resp.headers.get("Content-Type", "") else resp.text,
+            "response":    resp.json() if "json" in content_type else resp.text,
         })
     except Exception as e:
         return jsonify({"error": f"GET call failed: {str(e)}"}), 500
-
-
-# ─────────────────────────────────────────────
-# BONUS ENDPOINT: GET /token  (just get token)
-# ─────────────────────────────────────────────
-@app.route("/token", methods=["GET"])
-def token_only():
-    try:
-        access_token = get_access_token()
-        return jsonify({"access_token": access_token})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
