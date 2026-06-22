@@ -67,6 +67,7 @@ CREATE_SCOPE = (
 )
 
 READ_CREATE_SCOPE = READ_SCOPE + " " + CREATE_SCOPE
+BULK_READ_SCOPE = READ_SCOPE + " system/Group.read"
 
 # ─────────────────────────────────────────────
 # ENVIRONMENT CONFIG
@@ -85,12 +86,12 @@ ENVIRONMENTS = {
     "bulkprod": {
         "client_id": "tZ_KYyTqt8ryjWjhZpwEDPkDbxAGhh1KqKyr8c8zQas",
         "token_url": "https://oauthserver.eclinicalworks.com/oauth/oauth2/token",
-        "scope":     READ_SCOPE,
+        "scope":     BULK_READ_SCOPE,
     },
     "bulksandbox": {
         "client_id": "0jBDg0uX3WEhhMzFmwqL1PH8LJP5Kx58neJTOWLhHGA",
         "token_url": "https://staging-oauthserver.ecwcloud.com/oauth/oauth2/token",
-        "scope":     READ_SCOPE,
+        "scope":     BULK_READ_SCOPE,
     },
 }
 
