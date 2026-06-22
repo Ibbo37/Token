@@ -42,10 +42,23 @@ W8YujzKvlP/kQs3cH5mb0sPIKw==
 TOKEN_URL    = "https://oauthserver.eclinicalworks.com/oauth/oauth2/token"
 CLIENT_ID    = "38W1oSu4X_LKOpJEAB-55HwLX9AOdWbNSBkBb1ipdic"  # iss/sub from your JWT
 KID          = "connect4.healow.com"
-SCOPE        = (
-    "system/Patient.read system/Encounter.create "
-    "system/Practitioner.read system/PractitionerRole.read "
-    "system/DocumentReference.create system/Immunization.read"
+SCOPE = (
+    "system/AllergyIntolerance.read system/Basic.read system/Binary.read "
+    "system/CarePlan.read system/CareTeam.read system/Condition.read "
+    "system/Coverage.read system/Device.read system/DiagnosticReport.read "
+    "system/DocumentReference.read system/Encounter.read system/FamilyMemberHistory.read "
+    "system/Goal.read system/Immunization.read system/Location.read "
+    "system/Media.read system/Medication.read system/MedicationAdministration.read "
+    "system/MedicationDispense.read system/MedicationRequest.read system/Observation.read "
+    "system/Organization.read system/Patient.read system/Practitioner.read "
+    "system/PractitionerRole.read system/Procedure.read system/Provenance.read "
+    "system/Questionnaire.read system/QuestionnaireResponse.read system/RelatedPerson.read "
+    "system/ServiceRequest.read system/Specimen.read "
+    "system/AllergyIntolerance.create system/Communication.create "
+    "system/Condition.create system/Coverage.create system/DocumentReference.create "
+    "system/Encounter.create system/Immunization.create system/MedicationRequest.create "
+    "system/MedicationStatement.create system/Patient.create "
+    "system/QuestionnaireResponse.create system/ServiceRequest.create system/Task.create"
 )
 
 
