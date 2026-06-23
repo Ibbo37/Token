@@ -44,8 +44,6 @@ KID = "connect4.healow.com"
 # ─────────────────────────────────────────────
 # SCOPES
 # ─────────────────────────────────────────────
-
-# Single Patient - Read Only
 SINGLE_READ_SCOPE = (
     "system/AllergyIntolerance.read system/Basic.read system/Binary.read "
     "system/CarePlan.read system/CareTeam.read system/Condition.read "
@@ -60,7 +58,6 @@ SINGLE_READ_SCOPE = (
     "system/ServiceRequest.read system/Specimen.read"
 )
 
-# Single Patient - Create Only
 SINGLE_CREATE_SCOPE = (
     "system/AllergyIntolerance.create system/Communication.create "
     "system/Condition.create system/Coverage.create system/DocumentReference.create "
@@ -69,10 +66,8 @@ SINGLE_CREATE_SCOPE = (
     "system/QuestionnaireResponse.create system/ServiceRequest.create system/Task.create"
 )
 
-# Single Prod = Read + Create
 SINGLE_PROD_SCOPE = SINGLE_READ_SCOPE + " " + SINGLE_CREATE_SCOPE
 
-# Bulk - Read Only (different resource list)
 BULK_READ_SCOPE = (
     "system/AllergyIntolerance.read system/Binary.read "
     "system/CarePlan.read system/CareTeam.read system/Condition.read "
@@ -113,8 +108,10 @@ ENVIRONMENTS = {
     },
 }
 
+BULK_MODES = {"bulkprod", "bulksandbox"}
+
 # ─────────────────────────────────────────────
-# TOKEN CACHE (in-memory, per environment)
+# TOKEN CACHE
 # ─────────────────────────────────────────────
 token_cache = {}
 
@@ -157,32 +154,28 @@ def get_access_token(mode):
     if cached:
         return cached
 
-    env       = ENVIRONMENTS[mode]
-    client_id = env["client_id"]
-    token_url = env["token_url"]
-    scope     = env["scope"]
-
-    client_assertion = generate_client_assertion(client_id, token_url)
+    env              = ENVIRONMENTS[mode]
+    client_assertion = generate_client_assertion(env["client_id"], env["token_url"])
 
     data = {
         "grant_type":            "client_credentials",
         "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
         "client_assertion":      client_assertion,
-        "scope":                 scope,
+        "scope":                 env["scope"],
     }
 
-    resp = requests.post(token_url, data=data, timeout=10)
+    resp = requests.post(env["token_url"], data=data, timeout=10)
     resp.raise_for_status()
-    result = resp.json()
-
+    result       = resp.json()
     access_token = result["access_token"]
     expires_in   = result.get("expires_in", 300)
 
     set_cached_token(mode, access_token, expires_in)
     return access_token
 
+
 # ─────────────────────────────────────────────
-# ENDPOINT: GET /token?mode=singleprod
+# ENDPOINT 1: GET /token?mode=singleprod
 # ─────────────────────────────────────────────
 @app.route("/token", methods=["GET"])
 def token_only():
@@ -199,8 +192,10 @@ def token_only():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 # ─────────────────────────────────────────────
-# ENDPOINT: GET /call?mode=singleprod&url=...
+# ENDPOINT 2: GET /call?mode=singleprod&url=...
+# Single Patient FHIR Call
 # ─────────────────────────────────────────────
 @app.route("/call", methods=["GET"])
 def call_with_token():
@@ -223,7 +218,7 @@ def call_with_token():
     }
 
     try:
-        resp = requests.get(target_url, headers=headers, timeout=15)
+        resp         = requests.get(target_url, headers=headers, timeout=15)
         content_type = resp.headers.get("Content-Type", "")
         return jsonify({
             "mode":        mode,
@@ -233,6 +228,82 @@ def call_with_token():
         })
     except Exception as e:
         return jsonify({"error": f"GET call failed: {str(e)}"}), 500
+
+
+# ─────────────────────────────────────────────
+# ENDPOINT 3: GET /bulk?mode=bulkprod&url=...
+# Bulk FHIR Kick-off Call
+# Headers: Prefer: respond-async, Accept: application/fhir+json
+# ─────────────────────────────────────────────
+@app.route("/bulk", methods=["GET"])
+def bulk_call():
+    mode       = request.args.get("mode", "bulkprod").lower()
+    target_url = request.args.get("url")
+
+    if mode not in BULK_MODES:
+        return jsonify({"error": "Invalid mode for /bulk. Use: bulkprod or bulksandbox"}), 400
+    if not target_url:
+        return jsonify({"error": "Missing 'url' query param"}), 400
+
+    try:
+        access_token = get_access_token(mode)
+    except Exception as e:
+        return jsonify({"error": f"Token generation failed: {str(e)}"}), 500
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept":        "application/fhir+json",
+        "Prefer":        "respond-async",
+    }
+
+    try:
+        resp         = requests.get(target_url, headers=headers, timeout=15)
+        content_type = resp.headers.get("Content-Type", "")
+        return jsonify({
+            "mode":        mode,
+            "scope":       ENVIRONMENTS[mode]["scope"],
+            "status_code": resp.status_code,
+            "response":    resp.json() if "json" in content_type else resp.text,
+        })
+    except Exception as e:
+        return jsonify({"error": f"Bulk call failed: {str(e)}"}), 500
+
+
+# ─────────────────────────────────────────────
+# ENDPOINT 4: GET /jobstatus?mode=bulkprod&url=...
+# Bulk Job Status & Delete (no special headers)
+# ─────────────────────────────────────────────
+@app.route("/jobstatus", methods=["GET"])
+def job_status():
+    mode       = request.args.get("mode", "bulkprod").lower()
+    target_url = request.args.get("url")
+
+    if mode not in BULK_MODES:
+        return jsonify({"error": "Invalid mode for /jobstatus. Use: bulkprod or bulksandbox"}), 400
+    if not target_url:
+        return jsonify({"error": "Missing 'url' query param"}), 400
+
+    try:
+        access_token = get_access_token(mode)
+    except Exception as e:
+        return jsonify({"error": f"Token generation failed: {str(e)}"}), 500
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept":        "application/json",
+    }
+
+    try:
+        resp         = requests.get(target_url, headers=headers, timeout=15)
+        content_type = resp.headers.get("Content-Type", "")
+        return jsonify({
+            "mode":        mode,
+            "status_code": resp.status_code,
+            "response":    resp.json() if "json" in content_type else resp.text,
+        })
+    except Exception as e:
+        return jsonify({"error": f"Job status call failed: {str(e)}"}), 500
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
