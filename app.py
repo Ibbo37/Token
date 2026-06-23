@@ -112,12 +112,15 @@ BULK_MODES = {"bulkprod", "bulksandbox"}
 
 # ─────────────────────────────────────────────
 # TOKEN CACHE
+# Har mode ka token alag cache hota hai.
+# Token expiry se 60 sec pehle auto-refresh hoga.
 # ─────────────────────────────────────────────
 token_cache = {}
+REFRESH_BUFFER = 60  # seconds before expiry to trigger refresh
 
 def get_cached_token(mode):
     cached = token_cache.get(mode)
-    if cached and time.time() < cached["expires_at"] - 30:
+    if cached and time.time() < cached["expires_at"] - REFRESH_BUFFER:
         return cached["token"]
     return None
 
@@ -147,13 +150,15 @@ def generate_client_assertion(client_id, token_url):
     return jwt.encode(payload, PRIVATE_KEY, algorithm="RS384", headers=headers)
 
 # ─────────────────────────────────────────────
-# FETCH ACCESS TOKEN
+# FETCH ACCESS TOKEN (with cache + auto-refresh)
 # ─────────────────────────────────────────────
 def get_access_token(mode):
+    # Cache hit — wapas karo bina eCW call ke
     cached = get_cached_token(mode)
     if cached:
         return cached
 
+    # Cache miss ya expiry aane wali hai — naya token lo
     env              = ENVIRONMENTS[mode]
     client_assertion = generate_client_assertion(env["client_id"], env["token_url"])
 
@@ -168,7 +173,7 @@ def get_access_token(mode):
     resp.raise_for_status()
     result       = resp.json()
     access_token = result["access_token"]
-    expires_in   = result.get("expires_in", 300)
+    expires_in   = result.get("expires_in", 300)  # eCW default: 300 sec
 
     set_cached_token(mode, access_token, expires_in)
     return access_token
@@ -176,6 +181,7 @@ def get_access_token(mode):
 
 # ─────────────────────────────────────────────
 # ENDPOINT 1: GET /token?mode=singleprod
+# Sirf token return karta hai
 # ─────────────────────────────────────────────
 @app.route("/token", methods=["GET"])
 def token_only():
@@ -271,7 +277,7 @@ def bulk_call():
 
 # ─────────────────────────────────────────────
 # ENDPOINT 4: GET /jobstatus?mode=bulkprod&url=...
-# Bulk Job Status & Delete (no special headers)
+# Bulk Job Status & Delete
 # ─────────────────────────────────────────────
 @app.route("/jobstatus", methods=["GET"])
 def job_status():
