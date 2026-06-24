@@ -1,14 +1,15 @@
 import uuid
 import time
 import os
-import requests
+import asyncio
+import httpx
 import jwt
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 # ─────────────────────────────────────────────
-# PRIVATE KEY (same for all environments)
+# PRIVATE KEY
 # ─────────────────────────────────────────────
 PRIVATE_KEY = """-----BEGIN PRIVATE KEY-----
 MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDc6WzU7xncyMTr
@@ -42,6 +43,14 @@ W8YujzKvlP/kQs3cH5mb0sPIKw==
 KID = "connect4.healow.com"
 
 # ─────────────────────────────────────────────
+# BASE FHIR URLs
+# ─────────────────────────────────────────────
+FHIR_BASE = {
+    "prod":    "https://fhir4.eclinicalworks.com/fhir/r4/",
+    "sandbox": "https://staging-fhir.ecwcloud.com/fhir/r4/FFBJCD/",
+}
+
+# ─────────────────────────────────────────────
 # SCOPES
 # ─────────────────────────────────────────────
 SINGLE_READ_SCOPE = (
@@ -66,7 +75,7 @@ SINGLE_CREATE_SCOPE = (
     "system/QuestionnaireResponse.create system/ServiceRequest.create system/Task.create"
 )
 
-SINGLE_PROD_SCOPE = SINGLE_READ_SCOPE + " " + SINGLE_CREATE_SCOPE
+SINGLE_PROD_SCOPE  = SINGLE_READ_SCOPE + " " + SINGLE_CREATE_SCOPE
 
 BULK_READ_SCOPE = (
     "system/AllergyIntolerance.read system/Binary.read "
@@ -89,21 +98,25 @@ ENVIRONMENTS = {
     "singleprod": {
         "client_id": "38W1oSu4X_LKOpJEAB-55HwLX9AOdWbNSBkBb1ipdic",
         "token_url": "https://oauthserver.eclinicalworks.com/oauth/oauth2/token",
+        "fhir_base": FHIR_BASE["prod"],
         "scope":     SINGLE_PROD_SCOPE,
     },
     "singlesandbox": {
         "client_id": "UIcl857ln1yvzPkygxi9x5QMPEOoEnnJy72-gx2FUSw",
         "token_url": "https://staging-oauthserver.ecwcloud.com/oauth/oauth2/token",
+        "fhir_base": FHIR_BASE["sandbox"],
         "scope":     SINGLE_READ_SCOPE,
     },
     "bulkprod": {
         "client_id": "tZ_KYyTqt8ryjWjhZpwEDPkDbxAGhh1KqKyr8c8zQas",
         "token_url": "https://oauthserver.eclinicalworks.com/oauth/oauth2/token",
+        "fhir_base": FHIR_BASE["prod"],
         "scope":     BULK_READ_SCOPE,
     },
     "bulksandbox": {
         "client_id": "0jBDg0uX3WEhhMzFmwqL1PH8LJP5Kx58neJTOWLhHGA",
         "token_url": "https://staging-oauthserver.ecwcloud.com/oauth/oauth2/token",
+        "fhir_base": FHIR_BASE["sandbox"],
         "scope":     BULK_READ_SCOPE,
     },
 }
@@ -112,15 +125,12 @@ BULK_MODES = {"bulkprod", "bulksandbox"}
 
 # ─────────────────────────────────────────────
 # TOKEN CACHE
-# Har mode ka token alag cache hota hai.
-# Token expiry se 60 sec pehle auto-refresh hoga.
 # ─────────────────────────────────────────────
 token_cache = {}
-REFRESH_BUFFER = 60  # seconds before expiry to trigger refresh
 
 def get_cached_token(mode):
     cached = token_cache.get(mode)
-    if cached and time.time() < cached["expires_at"] - REFRESH_BUFFER:
+    if cached and time.time() < cached["expires_at"] - 30:
         return cached["token"]
     return None
 
@@ -131,7 +141,7 @@ def set_cached_token(mode, token, expires_in=300):
     }
 
 # ─────────────────────────────────────────────
-# GENERATE JWT client_assertion
+# GENERATE JWT
 # ─────────────────────────────────────────────
 def generate_client_assertion(client_id, token_url):
     now = int(time.time())
@@ -142,23 +152,17 @@ def generate_client_assertion(client_id, token_url):
         "sub": client_id,
         "aud": token_url,
     }
-    headers = {
-        "alg": "RS384",
-        "typ": "JWT",
-        "kid": KID,
-    }
+    headers = {"alg": "RS384", "typ": "JWT", "kid": KID}
     return jwt.encode(payload, PRIVATE_KEY, algorithm="RS384", headers=headers)
 
 # ─────────────────────────────────────────────
-# FETCH ACCESS TOKEN (with cache + auto-refresh)
+# FETCH ACCESS TOKEN (async)
 # ─────────────────────────────────────────────
-def get_access_token(mode):
-    # Cache hit — wapas karo bina eCW call ke
+async def get_access_token(mode):
     cached = get_cached_token(mode)
     if cached:
         return cached
 
-    # Cache miss ya expiry aane wali hai — naya token lo
     env              = ENVIRONMENTS[mode]
     client_assertion = generate_client_assertion(env["client_id"], env["token_url"])
 
@@ -169,19 +173,33 @@ def get_access_token(mode):
         "scope":                 env["scope"],
     }
 
-    resp = requests.post(env["token_url"], data=data, timeout=10)
-    resp.raise_for_status()
-    result       = resp.json()
-    access_token = result["access_token"]
-    expires_in   = result.get("expires_in", 300)  # eCW default: 300 sec
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(env["token_url"], data=data)
+        resp.raise_for_status()
+        result       = resp.json()
+        access_token = result["access_token"]
+        expires_in   = result.get("expires_in", 300)
+        set_cached_token(mode, access_token, expires_in)
+        return access_token
 
-    set_cached_token(mode, access_token, expires_in)
-    return access_token
+# ─────────────────────────────────────────────
+# ASYNC HELPER
+# ─────────────────────────────────────────────
+def run_async(coro):
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(asyncio.run, coro)
+                return future.result()
+        return loop.run_until_complete(coro)
+    except RuntimeError:
+        return asyncio.run(coro)
 
 
 # ─────────────────────────────────────────────
 # ENDPOINT 1: GET /token?mode=singleprod
-# Sirf token return karta hai
 # ─────────────────────────────────────────────
 @app.route("/token", methods=["GET"])
 def token_only():
@@ -189,11 +207,14 @@ def token_only():
     if mode not in ENVIRONMENTS:
         return jsonify({"error": f"Invalid mode. Choose from: {list(ENVIRONMENTS.keys())}"}), 400
     try:
-        access_token = get_access_token(mode)
+        start        = time.time()
+        access_token = run_async(get_access_token(mode))
+        elapsed_ms   = round((time.time() - start) * 1000)
         return jsonify({
             "mode":         mode,
             "access_token": access_token,
             "scope":        ENVIRONMENTS[mode]["scope"],
+            "response_ms":  elapsed_ms,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -213,33 +234,36 @@ def call_with_token():
     if not target_url:
         return jsonify({"error": "Missing 'url' query param"}), 400
 
-    try:
-        access_token = get_access_token(mode)
-    except Exception as e:
-        return jsonify({"error": f"Token generation failed: {str(e)}"}), 500
+    async def _call():
+        token = await get_access_token(mode)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept":        "application/json",
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(target_url, headers=headers)
+            return resp
 
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Accept":        "application/json",
-    }
-
     try:
-        resp         = requests.get(target_url, headers=headers, timeout=15)
-        content_type = resp.headers.get("Content-Type", "")
+        start    = time.time()
+        resp     = run_async(_call())
+        elapsed  = round((time.time() - start) * 1000)
+        ct       = resp.headers.get("content-type", "")
         return jsonify({
             "mode":        mode,
+            "fhir_base":   ENVIRONMENTS[mode]["fhir_base"],
             "scope":       ENVIRONMENTS[mode]["scope"],
             "status_code": resp.status_code,
-            "response":    resp.json() if "json" in content_type else resp.text,
+            "response_ms": elapsed,
+            "response":    resp.json() if "json" in ct else resp.text,
         })
     except Exception as e:
-        return jsonify({"error": f"GET call failed: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 # ─────────────────────────────────────────────
 # ENDPOINT 3: GET /bulk?mode=bulkprod&url=...
-# Bulk FHIR Kick-off Call
-# Headers: Prefer: respond-async, Accept: application/fhir+json
+# Bulk FHIR Kick-off
 # ─────────────────────────────────────────────
 @app.route("/bulk", methods=["GET"])
 def bulk_call():
@@ -251,28 +275,32 @@ def bulk_call():
     if not target_url:
         return jsonify({"error": "Missing 'url' query param"}), 400
 
-    try:
-        access_token = get_access_token(mode)
-    except Exception as e:
-        return jsonify({"error": f"Token generation failed: {str(e)}"}), 500
+    async def _call():
+        token = await get_access_token(mode)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept":        "application/fhir+json",
+            "Prefer":        "respond-async",
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(target_url, headers=headers)
+            return resp
 
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Accept":        "application/fhir+json",
-        "Prefer":        "respond-async",
-    }
-
     try:
-        resp         = requests.get(target_url, headers=headers, timeout=15)
-        content_type = resp.headers.get("Content-Type", "")
+        start   = time.time()
+        resp    = run_async(_call())
+        elapsed = round((time.time() - start) * 1000)
+        ct      = resp.headers.get("content-type", "")
         return jsonify({
             "mode":        mode,
+            "fhir_base":   ENVIRONMENTS[mode]["fhir_base"],
             "scope":       ENVIRONMENTS[mode]["scope"],
             "status_code": resp.status_code,
-            "response":    resp.json() if "json" in content_type else resp.text,
+            "response_ms": elapsed,
+            "response":    resp.json() if "json" in ct else resp.text,
         })
     except Exception as e:
-        return jsonify({"error": f"Bulk call failed: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 # ─────────────────────────────────────────────
@@ -289,26 +317,29 @@ def job_status():
     if not target_url:
         return jsonify({"error": "Missing 'url' query param"}), 400
 
-    try:
-        access_token = get_access_token(mode)
-    except Exception as e:
-        return jsonify({"error": f"Token generation failed: {str(e)}"}), 500
+    async def _call():
+        token = await get_access_token(mode)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept":        "application/json",
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(target_url, headers=headers)
+            return resp
 
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Accept":        "application/json",
-    }
-
     try:
-        resp         = requests.get(target_url, headers=headers, timeout=15)
-        content_type = resp.headers.get("Content-Type", "")
+        start   = time.time()
+        resp    = run_async(_call())
+        elapsed = round((time.time() - start) * 1000)
+        ct      = resp.headers.get("content-type", "")
         return jsonify({
             "mode":        mode,
             "status_code": resp.status_code,
-            "response":    resp.json() if "json" in content_type else resp.text,
+            "response_ms": elapsed,
+            "response":    resp.json() if "json" in ct else resp.text,
         })
     except Exception as e:
-        return jsonify({"error": f"Job status call failed: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
