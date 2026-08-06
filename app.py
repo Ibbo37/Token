@@ -86,7 +86,7 @@ SINGLE_CREATE_SCOPE = (
     "system/QuestionnaireResponse.create system/ServiceRequest.create system/Task.create"
 )
 
-SINGLE_PROD_SCOPE  = SINGLE_READ_SCOPE + " " + SINGLE_CREATE_SCOPE
+SINGLE_PROD_SCOPE  = SINGLE_READ_SCOPE
 
 BULK_READ_SCOPE = (
     "system/AllergyIntolerance.read system/Binary.read "
