@@ -186,7 +186,8 @@ async def get_access_token(mode):
 
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(env["token_url"], data=data)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            raise Exception(f"Token request failed ({resp.status_code}): {resp.text}")
         result       = resp.json()
         access_token = result["access_token"]
         expires_in   = result.get("expires_in", 300)
