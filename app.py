@@ -2,12 +2,23 @@ import uuid
 import time
 import os
 import asyncio
+import logging
+import traceback
 import httpx
 import jwt
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("token-service")
+
+# ─────────────────────────────────────────────
+# DEBUG TOGGLE STATE
+# ─────────────────────────────────────────────
+DEBUG_SECRET = "mk_debug_9f3a2xk7"
+DEBUG_SECRET = os.environ.get("DEBUG_SECRET", "changeme123")  # set this in Render env vars
+DEBUG_MODE = os.environ.get("DEBUG_MODE", "false").lower() == "true"
 # ─────────────────────────────────────────────
 # PRIVATE KEY
 # ─────────────────────────────────────────────
@@ -201,6 +212,31 @@ def run_async(coro):
 # ─────────────────────────────────────────────
 # ENDPOINT 1: GET /token?mode=singleprod
 # ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# DEBUG TOGGLE ENDPOINTS
+# ─────────────────────────────────────────────
+@app.route("/debug/on", methods=["GET"])
+def debug_on():
+    global DEBUG_MODE
+    secret = request.args.get("secret")
+    if secret != DEBUG_SECRET:
+        return jsonify({"error": "unauthorized"}), 403
+    DEBUG_MODE = True
+    return jsonify({"debug_mode": DEBUG_MODE})
+
+@app.route("/debug/off", methods=["GET"])
+def debug_off():
+    global DEBUG_MODE
+    secret = request.args.get("secret")
+    if secret != DEBUG_SECRET:
+        return jsonify({"error": "unauthorized"}), 403
+    DEBUG_MODE = False
+    return jsonify({"debug_mode": DEBUG_MODE})
+
+@app.route("/debug/status", methods=["GET"])
+def debug_status():
+    return jsonify({"debug_mode": DEBUG_MODE})
+
 @app.route("/token", methods=["GET"])
 def token_only():
     mode = request.args.get("mode", "singleprod").lower()
