@@ -4,9 +4,13 @@ import os
 import asyncio
 import logging
 import threading
+import re
+import json
 import httpx
 import jwt
 from flask import Flask, request, jsonify
+from cryptography.hazmat.primitives import serialization
+from jwt.algorithms import RSAAlgorithm
 
 app = Flask(__name__)
 
@@ -23,7 +27,18 @@ DEBUG_MODE = os.environ.get("DEBUG_MODE", "false").lower() == "true"
 # PRIVATE KEY (loaded from Render env var PRIVATE_KEY)
 # Paste the full PEM, including BEGIN/END lines, as the env var value.
 # ─────────────────────────────────────────────
-PRIVATE_KEY = os.environ.get("PRIVATE_KEY", "").replace("\\n", "\n")
+def clean_pem(env_name):
+    raw = os.environ.get(env_name, "").strip().strip('"').strip("'").replace("\\n", "\n")
+    m = re.search(r"-----BEGIN ([A-Z ]+)-----(.*?)-----END \1-----", raw, re.S)
+    if not m:
+        return raw  # wrong format will fail loudly
+    label = m.group(1)
+    body = "".join(m.group(2).split())
+    lines = [body[i:i + 64] for i in range(0, len(body), 64)]
+    return f"-----BEGIN {label}-----\n" + "\n".join(lines) + f"\n-----END {label}-----\n"
+
+PRIVATE_KEY = clean_pem("PRIVATE_KEY")
+PUBLIC_KEY  = clean_pem("PUBLIC_KEY")  # optional: only used for JWKS / match check
 
 KID = "connect4.healow.com"
 
@@ -208,7 +223,42 @@ def debug_off():
 
 @app.route("/debug/status", methods=["GET"])
 def debug_status():
-    return jsonify({"debug_mode": DEBUG_MODE})
+    info = {"debug_mode": DEBUG_MODE}
+    first = os.environ.get("PRIVATE_KEY", "").strip().splitlines()[:1]
+    info["private_key_env_first_line"] = first[0][:40] if first else None
+    priv = None
+    try:
+        priv = serialization.load_pem_private_key(PRIVATE_KEY.encode(), password=None)
+        info["private_key_parses"] = True
+    except Exception as e:
+        info["private_key_parses"] = False
+        info["private_key_error"] = str(e)[:100]
+    if PUBLIC_KEY.strip():
+        try:
+            pub = serialization.load_pem_public_key(PUBLIC_KEY.encode())
+            info["public_key_parses"] = True
+            if priv:
+                info["public_matches_private"] = (
+                    pub.public_numbers() == priv.public_key().public_numbers()
+                )
+        except Exception as e:
+            info["public_key_parses"] = False
+            info["public_key_error"] = str(e)[:100]
+    return jsonify(info)
+
+
+@app.route("/.well-known/jwks.json", methods=["GET"])
+def jwks():
+    try:
+        if PUBLIC_KEY.strip():
+            pub = serialization.load_pem_public_key(PUBLIC_KEY.encode())
+        else:
+            pub = serialization.load_pem_private_key(PRIVATE_KEY.encode(), password=None).public_key()
+        jwk = json.loads(RSAAlgorithm.to_jwk(pub))
+        jwk.update({"kid": KID, "alg": "RS384", "use": "sig"})
+        return jsonify({"keys": [jwk]})
+    except Exception as e:
+        return jsonify({"error": str(e)[:120]}), 500
 
 
 # ─────────────────────────────────────────────
@@ -411,10 +461,13 @@ def job_status():
 # KEEP-ALIVE (Render free tier)
 # ─────────────────────────────────────────────
 def keep_alive():
+    base = os.environ.get("RENDER_EXTERNAL_URL")
+    if not base:
+        return
     while True:
-        time.sleep(300)  # 5 min
+        time.sleep(300)
         try:
-            httpx.get("https://token-ee3f.onrender.com/debug/status", timeout=10)
+            httpx.get(f"{base}/debug/status", timeout=10)
         except Exception:
             pass
 
