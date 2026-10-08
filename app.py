@@ -3,7 +3,7 @@ import time
 import os
 import asyncio
 import logging
-import traceback
+import threading
 import httpx
 import jwt
 from flask import Flask, request, jsonify
@@ -16,40 +16,14 @@ logger = logging.getLogger("token-service")
 # ─────────────────────────────────────────────
 # DEBUG TOGGLE STATE
 # ─────────────────────────────────────────────
-DEBUG_SECRET = "mk_debug_9f3a2xk7"
 DEBUG_SECRET = os.environ.get("DEBUG_SECRET", "changeme123")  # set this in Render env vars
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "false").lower() == "true"
+
 # ─────────────────────────────────────────────
-# PRIVATE KEY
+# PRIVATE KEY (loaded from Render env var PRIVATE_KEY)
+# Paste the full PEM, including BEGIN/END lines, as the env var value.
 # ─────────────────────────────────────────────
-PRIVATE_KEY = """-----BEGIN PRIVATE KEY-----
-MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDc6WzU7xncyMTr
-pOm24abgDQtMnsIEvrPCdNaff4vk2ewpJZXlIMQVvnYa5FwV0twulDkYVEnfsdwg
-2x32h9mH7JNlciKGm/Ka1dugiDGk0APV98JExtJp7Djpka8V/1pGpOXLtj/vM2+z
-SJWQxvyYVE54sGW23KGXStd7u2wap7507/q4AEYCM3x9SongN8Q2B/qqNqGO4W2J
-JQ9xkGlNAprT+9Mgb1+ksL+otsPHT99UwD+50N2IbYIUNIlAXEfn6xja5JPCVLEd
-dmSquAAO5TMNzYPbIiTN/owyV8bqnOK1AOhl9QMSwhyvkiyzo9rIc2dQ9vpwfd8g
-iffdOk59AgMBAAECggEACJaDflioOPrOGvoPguZNUjb3mjwuvzf5rYTUxiETe2tU
-YLofFGf8b3r2xO9dPBT1LdNhz9YRBCL6M4XJKakY1g2mokI4YOLFoOrQ7bH1uhpD
-F+mYkgtnqSn/gWcCNzj01bu52jxEyoQFouLeu6Dct4BJh6wV3DDCEGteqqb72iJa
-QJwZRlqmNt52wlG+nBTkkCXXNgAvpABP0KmPWxZJS10/5NSZGrKxgSCYg+1FfVJl
-GQNURIj7k4psEiTg9XYXHfJq60wtfKFJciUpGsRBfTl8RYtRnYD1qoJtZCvcbOS1
-T0OGS0dFrsbsLoaWCi4kiOyQmSu85s4sMZ1+NE/6EQKBgQD9Ms6JBj0ZB2FONsJK
-DDVAb1s82twnlNpd9VkpZZXzdxuThMhdNCeYD4oEUtY7Eb7XLCEBygrGM2vOHDVn
-6pClX+WvGYHuxaXkq63NcckNqCudmvFhum/4qCbv4zav/teenT5BR5+dMRXXdnl6
-hn9Nq6JrWvUt4aBRa7OaB5pD0QKBgQDfWypSudVn9c3fUcK2D7H2/5Tqo+5R3bJf
-vQ5wsg8SHktiCRdh/34YItG17q35tzYBG/GVN8SsV76yOpH4+6jCmyjFTAOWD1HS
-NC2ZXWwFEUsuTVipy240ioO+g02+WMDzNWTMRBUk90p02yuUbrAsPgpU1nKIACzb
-rPspIHCm7QKBgQCrRTHWGGU9x/M3P+0+v3FKC8lQqc7f612mzu6oBPJgxQHfUKNk
-AIKD5ob6k7ocLM3FqTEOj8en+GKFAinSCCYd53drcTql9AZaXxLq9HwGg+o06vk6
-nS1eqwfjnvOAK0dZII5bBALhBrH6lEZp7g6w0FfGfLl6drPGP682ksvz8QKBgQCC
-1w3A7jmUL8rM0kFkk2cmEOw0U5mM/Xi7Wq112Oi5LWPtZvP6pUdBbkw47jud9/Q7
-zBnF1qhwaOo9z8+o8gsXDPtiMDg9lHXS1FwN5ksb4NiQpCCXPqMtRiMM3DATnDxT
-fGiyvANC51YHhEhQKFMtZ553ujPXdXrRqNBsdCNptQKBgQCTWIjo+8HT1NPe42Ad
-K8gWBKxx7W5b8ffk7h4C+zuHgr9f2K0r9TU7tbzexphhWNx/EbcL/ewmgvRSIYc8
-Vs0zUimHcwlK6dP1uCywbSXzzK0nTlQHyfDzkbXgx0nuMLHhPzVUzux72bSobpzq
-W8YujzKvlP/kQs3cH5mb0sPIKw==
------END PRIVATE KEY-----"""
+PRIVATE_KEY = os.environ.get("PRIVATE_KEY", "").replace("\\n", "\n")
 
 KID = "connect4.healow.com"
 
@@ -86,7 +60,7 @@ SINGLE_CREATE_SCOPE = (
     "system/QuestionnaireResponse.create system/ServiceRequest.create system/Task.create"
 )
 
-SINGLE_PROD_SCOPE  = SINGLE_READ_SCOPE
+SINGLE_PROD_SCOPE = SINGLE_READ_SCOPE
 
 BULK_READ_SCOPE = (
     "system/AllergyIntolerance.read system/Binary.read "
@@ -116,7 +90,7 @@ ENVIRONMENTS = {
         "client_id": "UIcl857ln1yvzPkygxi9x5QMPEOoEnnJy72-gx2FUSw",
         "token_url": "https://staging-oauthserver.ecwcloud.com/oauth/oauth2/token",
         "fhir_base": FHIR_BASE["sandbox"],
-        "scope":     SINGLE_READ_SCOPE,
+        "scope":     SINGLE_READ_SCOPE,  # replace with working_scope_string from /debug/scopecheck
     },
     "bulkprod": {
         "client_id": "tZ_KYyTqt8ryjWjhZpwEDPkDbxAGhh1KqKyr8c8zQas",
@@ -167,12 +141,14 @@ def generate_client_assertion(client_id, token_url):
     return jwt.encode(payload, PRIVATE_KEY, algorithm="RS384", headers=headers)
 
 # ─────────────────────────────────────────────
-# FETCH ACCESS TOKEN (async)
+# FETCH ACCESS TOKEN (async) - supports scope override
 # ─────────────────────────────────────────────
-async def get_access_token(mode):
-    cached = get_cached_token(mode)
-    if cached:
-        return cached
+async def get_access_token(mode, scope_override=None):
+    # Overrides bypass the cache so tests always hit eCW fresh
+    if not scope_override:
+        cached = get_cached_token(mode)
+        if cached:
+            return cached
 
     env              = ENVIRONMENTS[mode]
     client_assertion = generate_client_assertion(env["client_id"], env["token_url"])
@@ -181,7 +157,7 @@ async def get_access_token(mode):
         "grant_type":            "client_credentials",
         "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
         "client_assertion":      client_assertion,
-        "scope":                 env["scope"],
+        "scope":                 scope_override or env["scope"],
     }
 
     async with httpx.AsyncClient(timeout=10) as client:
@@ -191,7 +167,8 @@ async def get_access_token(mode):
         result       = resp.json()
         access_token = result["access_token"]
         expires_in   = result.get("expires_in", 300)
-        set_cached_token(mode, access_token, expires_in)
+        if not scope_override:
+            set_cached_token(mode, access_token, expires_in)
         return access_token
 
 # ─────────────────────────────────────────────
@@ -211,16 +188,12 @@ def run_async(coro):
 
 
 # ─────────────────────────────────────────────
-# ENDPOINT 1: GET /token?mode=singleprod
-# ─────────────────────────────────────────────
-# ─────────────────────────────────────────────
 # DEBUG TOGGLE ENDPOINTS
 # ─────────────────────────────────────────────
 @app.route("/debug/on", methods=["GET"])
 def debug_on():
     global DEBUG_MODE
-    secret = request.args.get("secret")
-    if secret != DEBUG_SECRET:
+    if request.args.get("secret") != DEBUG_SECRET:
         return jsonify({"error": "unauthorized"}), 403
     DEBUG_MODE = True
     return jsonify({"debug_mode": DEBUG_MODE})
@@ -228,8 +201,7 @@ def debug_on():
 @app.route("/debug/off", methods=["GET"])
 def debug_off():
     global DEBUG_MODE
-    secret = request.args.get("secret")
-    if secret != DEBUG_SECRET:
+    if request.args.get("secret") != DEBUG_SECRET:
         return jsonify({"error": "unauthorized"}), 403
     DEBUG_MODE = False
     return jsonify({"debug_mode": DEBUG_MODE})
@@ -238,19 +210,78 @@ def debug_off():
 def debug_status():
     return jsonify({"debug_mode": DEBUG_MODE})
 
+
+# ─────────────────────────────────────────────
+# DEBUG: test every scope individually
+# GET /debug/scopecheck?mode=singlesandbox&secret=...
+# ─────────────────────────────────────────────
+@app.route("/debug/scopecheck", methods=["GET"])
+def scope_check():
+    if request.args.get("secret") != DEBUG_SECRET:
+        return jsonify({"error": "unauthorized"}), 403
+
+    mode = request.args.get("mode", "singlesandbox").lower()
+    if mode not in ENVIRONMENTS:
+        return jsonify({"error": "invalid mode"}), 400
+
+    env    = ENVIRONMENTS[mode]
+    scopes = env["scope"].split()
+
+    async def _check_all():
+        sem = asyncio.Semaphore(5)
+
+        async def check(scope):
+            async with sem:
+                assertion = generate_client_assertion(env["client_id"], env["token_url"])
+                data = {
+                    "grant_type":            "client_credentials",
+                    "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                    "client_assertion":      assertion,
+                    "scope":                 scope,
+                }
+                async with httpx.AsyncClient(timeout=15) as client:
+                    r = await client.post(env["token_url"], data=data)
+                    return scope, r.status_code, r.text[:150]
+
+        return await asyncio.gather(*[check(s) for s in scopes])
+
+    try:
+        results = run_async(_check_all())
+        valid   = [s for s, code, _ in results if code == 200]
+        invalid = [{"scope": s, "status": code, "detail": t} for s, code, t in results if code != 200]
+        return jsonify({
+            "mode":                 mode,
+            "valid_count":          len(valid),
+            "invalid":              invalid,
+            "working_scope_string": " ".join(valid),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ─────────────────────────────────────────────
+# ENDPOINT 1: GET /token?mode=singleprod
+# Optional: &scope=... (only while debug mode is on)
+# ─────────────────────────────────────────────
 @app.route("/token", methods=["GET"])
 def token_only():
-    mode = request.args.get("mode", "singleprod").lower()
+    mode           = request.args.get("mode", "singleprod").lower()
+    scope_override = request.args.get("scope")
+
     if mode not in ENVIRONMENTS:
         return jsonify({"error": f"Invalid mode. Choose from: {list(ENVIRONMENTS.keys())}"}), 400
+
+    if scope_override and not DEBUG_MODE:
+        return jsonify({"error": "scope override requires debug mode"}), 403
+
     try:
         start        = time.time()
-        access_token = run_async(get_access_token(mode))
+        access_token = run_async(get_access_token(mode, scope_override))
         elapsed_ms   = round((time.time() - start) * 1000)
         return jsonify({
             "mode":         mode,
             "access_token": access_token,
-            "scope":        ENVIRONMENTS[mode]["scope"],
+            "scope":        scope_override or ENVIRONMENTS[mode]["scope"],
             "response_ms":  elapsed_ms,
         })
     except Exception as e:
@@ -278,14 +309,13 @@ def call_with_token():
             "Accept":        "application/json",
         }
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(target_url, headers=headers)
-            return resp
+            return await client.get(target_url, headers=headers)
 
     try:
-        start    = time.time()
-        resp     = run_async(_call())
-        elapsed  = round((time.time() - start) * 1000)
-        ct       = resp.headers.get("content-type", "")
+        start   = time.time()
+        resp    = run_async(_call())
+        elapsed = round((time.time() - start) * 1000)
+        ct      = resp.headers.get("content-type", "")
         return jsonify({
             "mode":        mode,
             "fhir_base":   ENVIRONMENTS[mode]["fhir_base"],
@@ -320,8 +350,7 @@ def bulk_call():
             "Prefer":        "respond-async",
         }
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(target_url, headers=headers)
-            return resp
+            return await client.get(target_url, headers=headers)
 
     try:
         start   = time.time()
@@ -361,8 +390,7 @@ def job_status():
             "Accept":        "application/json",
         }
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(target_url, headers=headers)
-            return resp
+            return await client.get(target_url, headers=headers)
 
     try:
         start   = time.time()
@@ -379,14 +407,15 @@ def job_status():
         return jsonify({"error": str(e)}), 500
 
 
-import threading
-
+# ─────────────────────────────────────────────
+# KEEP-ALIVE (Render free tier)
+# ─────────────────────────────────────────────
 def keep_alive():
     while True:
         time.sleep(300)  # 5 min
         try:
-            httpx.get("https://token-ee3f.onrender.com/token?mode=singleprod", timeout=10)
-        except:
+            httpx.get("https://token-ee3f.onrender.com/debug/status", timeout=10)
+        except Exception:
             pass
 
 threading.Thread(target=keep_alive, daemon=True).start()
