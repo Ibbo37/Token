@@ -118,7 +118,7 @@ ENVIRONMENTS = {
         "client_id": "UIcl857ln1yvzPkygxi9x5QMPEOoEnnJy72-gx2FUSw",
         "token_url": "https://staging-oauthserver.ecwcloud.com/oauth/oauth2/token",
         "fhir_base": FHIR_BASE["sandbox"],
-        "scope":     SINGLE_PROD_SCOPE,  # replace with working_scope_string from /debug/scopecheck
+        "scope":     SANDBOX_SINGLE_READ_SCOPE,  # replace with working_scope_string from /debug/scopecheck
     },
     "bulkprod": {
         "client_id": "tZ_KYyTqt8ryjWjhZpwEDPkDbxAGhh1KqKyr8c8zQas",
