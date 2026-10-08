@@ -66,6 +66,19 @@ SINGLE_READ_SCOPE = (
     "system/Questionnaire.read system/QuestionnaireResponse.read system/RelatedPerson.read "
     "system/ServiceRequest.read system/Specimen.read"
 )
+SANDBOX_SINGLE_READ_SCOPE = (
+    "system/AllergyIntolerance.read system/Binary.read "
+    "system/CarePlan.read system/CareTeam.read system/Condition.read "
+    "system/Coverage.read system/Device.read system/DiagnosticReport.read "
+    "system/DocumentReference.read system/Encounter.read "
+    "system/Goal.read system/Immunization.read system/Location.read "
+    "system/Medication.read system/MedicationAdministration.read "
+    "system/MedicationRequest.read system/Observation.read "
+    "system/Organization.read system/Patient.read system/Practitioner.read "
+    "system/PractitionerRole.read system/Procedure.read system/Provenance.read "
+    "system/RelatedPerson.read "
+    "system/ServiceRequest.read "
+)
 
 SINGLE_CREATE_SCOPE = (
     "system/AllergyIntolerance.create system/Communication.create "
